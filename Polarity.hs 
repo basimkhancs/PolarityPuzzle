@@ -1,0 +1,221 @@
+module Polarity (polarity) where
+
+import Data.Array
+import Data.List (nub)
+import Data.Maybe ()
+
+--Solve
+polarity :: [String] -> ([Int], [Int], [Int], [Int]) -> [String]
+polarity pus cons =
+  case findSol pus cons of
+    Just ans -> ans
+    Nothing  -> error "Couldn't solve the puzzle!"
+
+--Tile
+data Tile = Tile
+  { tileNumber  :: Int
+  , firstSpot   :: (Int, Int)
+  , secondSpot  :: (Int, Int)
+  , rowsTouched :: [Int]
+  , colsTouched :: [Int]
+  } deriving (Show)
+
+--Place
+data Placement = Covered | Direction Bool
+  deriving (Show, Eq)
+
+--Board
+data GameBoard = GameBoard
+  { layout       :: Array (Int, Int) Char
+  , rowPositives :: Array Int Int
+  , rowNegatives :: Array Int Int
+  , colPositives :: Array Int Int
+  , colNegatives :: Array Int Int
+  , rowsLeft     :: Array Int Int
+  , colsLeft     :: Array Int Int
+  } deriving (Show)
+
+--Find
+findSol :: [String] -> ([Int], [Int], [Int], [Int]) -> Maybe [String]
+findSol pus (lGoals, rGoals, tGoals, bGoals) =
+  let rN   = length pus
+      cN   = length (head pus)
+      -- Create one-dimensional grid from rows using concatMap instead of nested loops
+      grd  = listArray ((0,0), (rN - 1, cN - 1)) (concat pus)
+      -- Setup tiles using map, filter and zip
+      tileList =
+          let posList = range ((0,0),(rN-1, cN-1))
+              zipped  = zip posList [0..]
+              filt    = filter (\((i,j), _) -> grd ! (i,j) `elem` "TL") zipped
+          in map (\((i,j), k) -> makeTile grd (i,j) k) filt
+      bEmpty = array ((0,0),(rN-1, cN-1))
+                (concatMap (\i -> map (\j -> ((i,j),'_')) [0 .. cN - 1]) [0 .. rN - 1])
+      posRowZero = listArray (0, rN - 1) (replicate rN 0)
+      negRowZero = listArray (0, rN - 1) (replicate rN 0)
+      posColZero = listArray (0, cN - 1) (replicate cN 0)
+      negColZero = listArray (0, cN - 1) (replicate cN 0)
+      -- Use accumArray with converted loops via concatMap
+      rTileCounts = accumArray (+) 0 (0, rN - 1)
+                      (concatMap (\tt -> map (\r -> (r,1)) (rowsTouched tt)) tileList)
+      cTileCounts = accumArray (+) 0 (0, cN - 1)
+                      (concatMap (\tt -> map (\c -> (c,1)) (colsTouched tt)) tileList)
+      initBoard = GameBoard
+                    { layout       = bEmpty
+                    , rowPositives = posRowZero
+                    , rowNegatives = negRowZero
+                    , colPositives = posColZero
+                    , colNegatives = negColZero
+                    , rowsLeft     = rTileCounts
+                    , colsLeft     = cTileCounts
+                    }
+      targetL = listArray (0, rN - 1) lGoals
+      targetR = listArray (0, rN - 1) rGoals
+      targetT = listArray (0, cN - 1) tGoals
+      targetB = listArray (0, cN - 1) bGoals
+  in fmap (boardLines (rN, cN)) $
+       exploreOpts 0 tileList initBoard (targetL, targetR, targetT, targetB)
+
+--Boardify
+boardLines :: (Int, Int) -> Array (Int, Int) Char -> [String]
+boardLines (nR, nC) brd =
+  map (\i -> map (\j -> brd ! (i,j)) [0 .. nC-1]) [0 .. nR-1]
+
+--Tiles
+setupTiles :: Array (Int, Int) Char -> (Int, Int) -> [Tile]
+setupTiles grd (nR, nC) =
+  let posList = range ((0,0), (nR-1, nC-1))
+      pairs   = zip posList [0..]
+      filt    = filter (\((i,j), _) -> grd ! (i,j) `elem` "TL") pairs
+  in map (\((i,j), k) -> makeTile grd (i,j) k) filt
+
+--Make
+makeTile :: Array (Int, Int) Char -> (Int, Int) -> Int -> Tile
+makeTile gr (x,y) n =
+  let s     = gr ! (x,y)
+      posNew = case s of
+                 'T' -> (x + 1, y)
+                 'L' -> (x, y + 1)
+                 _   -> error "Invalid tile symbol"
+      rowsAff = nub [x, fst posNew]
+      colsAff = nub [y, snd posNew]
+  in Tile { tileNumber  = n
+          , firstSpot   = (x, y)
+          , secondSpot  = posNew
+          , rowsTouched = rowsAff
+          , colsTouched = colsAff
+          }
+
+--Explore
+exploreOpts :: Int -> [Tile] -> GameBoard -> (Array Int Int, Array Int Int, Array Int Int, Array Int Int) -> Maybe (Array (Int, Int) Char)
+exploreOpts i ttList brd tgt
+  | i == length ttList =
+      if isSolValid brd tgt then Just (layout brd) else Nothing
+  | otherwise =
+      let curr = ttList !! i
+          opts = [Covered, Direction True, Direction False]
+          go [] = Nothing
+          go (ch:chs) =
+              case placeTile curr ch brd tgt of
+                Nothing    -> go chs
+                Just newBd ->
+                  case exploreOpts (i+1) ttList newBd tgt of
+                    Just ans -> Just ans
+                    Nothing  -> go chs
+      in go opts
+
+--Validate
+isSolValid :: GameBoard -> (Array Int Int, Array Int Int, Array Int Int, Array Int Int) -> Bool
+isSolValid brd (tgtL, tgtR, tgtT, tgtB) =
+  let (rS, rE) = bounds (rowPositives brd)
+      (cS, cE) = bounds (colPositives brd)
+      rMatch = all (\i ->
+                   (tgtL ! i == -1 || rowPositives brd ! i == tgtL ! i) &&
+                   (tgtR ! i == -1 || rowNegatives brd ! i == tgtR ! i))
+                 [rS .. rE]
+      cMatch = all (\j ->
+                   (tgtT ! j == -1 || colPositives brd ! j == tgtT ! j) &&
+                   (tgtB ! j == -1 || colNegatives brd ! j == tgtB ! j))
+                 [cS .. cE]
+  in rMatch && cMatch
+
+--PlaceTile
+placeTile :: Tile -> Placement -> GameBoard -> (Array Int Int, Array Int Int, Array Int Int, Array Int Int) -> Maybe GameBoard
+placeTile tt plc brd tgt =
+  let ((_, _), (maxR, maxC)) = bounds (layout brd)
+      (nR, nC) = (maxR + 1, maxC + 1)
+      (p, q)   = firstSpot tt
+      (r, s)   = secondSpot tt
+      (m1, m2) = case plc of
+                   Covered       -> ('X', 'X')
+                   Direction True  -> ('+', '-')
+                   Direction False -> ('-', '+')
+      currLay = layout brd
+  in if currLay ! (p,q) /= '_' || currLay ! (r,s) /= '_'
+       then Nothing
+       else if not (isAdjOk (nR, nC) (p,q) m1 currLay) ||
+               not (isAdjOk (nR, nC) (r,s) m2 currLay)
+         then Nothing
+         else
+           let newLay = currLay // [((p,q), m1), ((r,s), m2)]
+               updCount arr idx inc = arr // [(idx, arr ! idx + inc)]
+               rowP1  = updCount (rowPositives brd) p (if m1 == '+' then 1 else 0)
+               rowP2  = updCount rowP1 r (if m2 == '+' then 1 else 0)
+               rowN1  = updCount (rowNegatives brd) p (if m1 == '-' then 1 else 0)
+               rowN2  = updCount rowN1 r (if m2 == '-' then 1 else 0)
+               colP1  = updCount (colPositives brd) q (if m1 == '+' then 1 else 0)
+               colP2  = updCount colP1 s (if m2 == '+' then 1 else 0)
+               colN1  = updCount (colNegatives brd) q (if m1 == '-' then 1 else 0)
+               colN2  = updCount colN1 s (if m2 == '-' then 1 else 0)
+               decArr a xs = foldl (\acc i -> acc // [(i, acc ! i - 1)]) a xs
+               newRowsL = decArr (rowsLeft brd) (rowsTouched tt)
+               newColsL = decArr (colsLeft brd) (colsTouched tt)
+               newBd = GameBoard { layout       = newLay
+                                 , rowPositives = rowP2
+                                 , rowNegatives = rowN2
+                                 , colPositives = colP2
+                                 , colNegatives = colN2
+                                 , rowsLeft     = newRowsL
+                                 , colsLeft     = newColsL
+                                 }
+           in if isProgValid newBd tgt then Just newBd else Nothing
+
+--Adjacent
+isAdjOk :: (Int, Int) -> (Int, Int) -> Char -> Array (Int, Int) Char -> Bool
+isAdjOk (nR, nC) (i,j) mk brd =
+  if mk == 'X'
+    then True
+    else
+      let nbrs = getNbrs (nR, nC) (i,j)
+      in all (\p -> let v = brd ! p in v == '_' || v == 'X' || v /= mk) nbrs
+
+--Neighbors
+getNbrs :: (Int, Int) -> (Int, Int) -> [(Int, Int)]
+getNbrs (nR, nC) (i,j) =
+  filter (\(x,y) -> x >= 0 && x < nR && y >= 0 && y < nC)
+         [ (i - 1, j), (i + 1, j), (i, j - 1), (i, j + 1) ]
+
+--Progress
+isProgValid :: GameBoard -> (Array Int Int, Array Int Int, Array Int Int, Array Int Int) -> Bool
+isProgValid brd (tgtL, tgtR, tgtT, tgtB) =
+  let (rLow, rHigh) = bounds (rowPositives brd)
+      (cLow, cHigh) = bounds (colPositives brd)
+      rOk = all (\i ->
+                let posVal = rowPositives brd ! i
+                    negVal = rowNegatives brd ! i
+                    remVal = rowsLeft brd ! i
+                    goalL  = tgtL ! i
+                    goalR  = tgtR ! i
+                in (goalL == -1 || (posVal <= goalL && goalL <= posVal + remVal)) &&
+                   (goalR == -1 || (negVal <= goalR && goalR <= negVal + remVal)))
+              [rLow .. rHigh]
+      cOk = all (\j ->
+                let posVal = colPositives brd ! j
+                    negVal = colNegatives brd ! j
+                    remVal = colsLeft brd ! j
+                    goalT  = tgtT ! j
+                    goalB  = tgtB ! j
+                in (goalT == -1 || (posVal <= goalT && goalT <= posVal + remVal)) &&
+                   (goalB == -1 || (negVal <= goalB && goalB <= negVal + remVal)))
+              [cLow .. cHigh]
+  in rOk && cOk
+
